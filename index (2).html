@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Charter Inbox · Empire Coach Line</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #080f18; font-family: 'Segoe UI', sans-serif; color: #cbd5e1; }
+  ::-webkit-scrollbar { width: 6px; } 
+  ::-webkit-scrollbar-track { background: #0c1521; }
+  ::-webkit-scrollbar-thumb { background: #1a2535; border-radius: 3px; }
+  select, input, textarea, button { font-family: inherit; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+
+// ─── CONFIGURATION — Edit these two values ─────────────────────────
+const AIRTABLE_API_KEY = "YOUR_AIRTABLE_TOKEN_HERE"; // paste your Airtable Personal Access Token
+const ACCESS_PIN       = "1234";                      // change this to your preferred PIN
+// ──────────────────────────────────────────────────────────────────
+
+const AIRTABLE_BASE_ID = "appVnPe3wThlzaxvK";
+const AIRTABLE_TABLE   = "Leads";
+
+// ─── Audio ────────────────────────────────────────────────────────
+const playSound = (type) => {
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    if (type === "ready") {
+      [[440,0],[660,0.15],[880,0.3]].forEach(([freq,delay]) => {
+        const osc = ctx.createOscillator(), gain = ctx.createGain();
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(freq, ctx.currentTime+delay);
+        gain.gain.setValueAtTime(0.3, ctx.currentTime+delay);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime+delay+0.4);
+        osc.start(ctx.currentTime+delay); osc.stop(ctx.currentTime+delay+0.4);
+      });
+    } else {
+      [[520,0],[520,0.22]].forEach(([freq,delay]) => {
+        const osc = ctx.createOscillator(), gain = ctx.createGain();
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.type = "triangle";
+        osc.frequency.setValueAtTime(freq, ctx.currentTime+delay);
+        gain.gain.setValueAtTime(0.25, ctx.currentTime+delay);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime+delay+0.18);
+        osc.start(ctx.currentTime+delay); osc.stop(ctx.currentTime+delay+0.2);
+      });
+    }
+  } catch(e) {}
+};
+
+// ─── Helpers ──────────────────────────────────────────────────────
+const formatReceived = (dateStr) => {
+  if (!dateStr) return "—";
+  const date = new Date(dateStr);
+  if (isNaN(date)) return dateStr;
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterday = new Date(today - 86400000);
+  const d = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const timeStr = date.toLocaleTimeString("en-US", { hour:"numeric", minute:"2-digit", hour12:true }).toLowerCase();
+  if (d.getTime() === today.getTime()) return `Today, ${timeStr}`;
+  if (d.getTime() === yesterday.getTime()) return `Yesterday, ${timeStr}`;
+  return date.toLocaleDateString("en-US", { month:"short", day:"numeric" }) + `, ${timeStr}`;
+};
+
+const STATUS_MAP = {
+  "new":"new","awaiting info":"awaiting","reply sent":"replied",
+  "ready to quote":"ready","quote sent":"sent","not qualified":"unqualified",
+  "spam":"spam","spam / scam":"spam","forwarded":"forwarded"
+};
+
+const mapRecord = (record) => {
+  const f = record.fields;
+  const assigneeRaw = (typeof f["Assignee"]==="object" ? f["Assignee"]?.name : f["Assignee"]) || "";
+  const assignee = assigneeRaw.toLowerCase().includes("newanda") ? "newanda"
+    : assigneeRaw.toLowerCase().includes("victor") ? "victor"
+    : assigneeRaw.toLowerCase() || "victor";
+  const statusRaw = (f["Status"] || "new").toLowerCase();
+  const status = STATUS_MAP[statusRaw] || "new";
+  const categoryRaw = (f["Category"] || "quote").toLowerCase();
+  const category = ["quote","inquiry","operations","priority"].includes(categoryRaw) ? categoryRaw : "quote";
+  const tripTypeRaw = (f["Trip Type"] || "standard").toLowerCase();
+  const tripType = tripTypeRaw.includes("complex")||tripTypeRaw.includes("multi") ? "complex" : "standard";
+  const flagsRaw = f["Flags"] || "";
+  const flags = flagsRaw ? flagsRaw.split(/[,\n]/).map(s=>s.trim()).filter(Boolean) : [];
+  const pickup = f["Pickup Location"] || "";
+  const dropoff = f["Dropoff Location"] || "";
+  const route = pickup && dropoff ? `${pickup} → ${dropoff}` : pickup || dropoff || "—";
+  const numBuses = f["Num Buses"] != null ? String(f["Num Buses"]) : "—";
+  return {
+    id: record.id,
+    customer:       f["Customer Name"]   || "Unknown",
+    contact:        f["Email"]           || "—",
+    phone:          f["Phone"]           || "—",
+    school:         f["School / Org"]    || "—",
+    category, status, assignee, tripType, flags, route, numBuses,
+    date:           f["Travel Date"]     || "—",
+    pickupLocation: f["Pickup Location"] || "—",
+    dropoffLocation:f["Dropoff Location"]|| "—",
+    pickupTime:     f["Pickup Time"]     || "—",
+    returnTime:     f["Return Time"]     || "—",
+    passengers:     f["Passengers"]      || "—",
+    numPassengers:  f["Passengers"]      || "—",
+    vehicle:        f["Vehicle Type"]    || "—",
+    amenities:      f["Amenities"]       || "",
+    draftReply:     f["AI Draft Reply"]  || "",
+    fullEmail:      f["Original Email"]  || "",
+    received:       formatReceived(f["Received At"]),
+    ada:            f["ADA Required"]    || false,
+    note:           f["Notes"]           || "",
+    eventType:      f["Event Type"]      || "—",
+  };
+};
+
+const fetchAllRecords = async () => {
+  let records = [], offset = null;
+  do {
+    const url = new URL(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${encodeURIComponent(AIRTABLE_TABLE)}`);
+    url.searchParams.set("pageSize","100");
+    url.searchParams.set("sort[0][field]","Received At");
+    url.searchParams.set("sort[0][direction]","desc");
+    if (offset) url.searchParams.set("offset", offset);
+    const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}` } });
+    if (!res.ok) { const e = await res.json(); throw new Error(e?.error?.message || `Error ${res.status}`); }
+    const json = await res.json();
+    records = [...records, ...(json.records||[])];
+    offset = json.offset || null;
+  } while (offset);
+  return records.map(mapRecord);
+};
+
+const isShortNotice = (dateStr) => {
+  if (!dateStr || dateStr==="—") return false;
+  const parts = dateStr.split("–")[0].trim().split("/");
+  if (parts.length < 2) return false;
+  const tripDate = new Date(2026, parseInt(parts[0])-1, parseInt(parts[1]));
+  const diff = (tripDate - new Date()) / (1000*60*60*24);
+  return diff >= 0 && diff <= 7;
+};
+
+// ─── Constants ────────────────────────────────────────────────────
+const REPS = [
+  { id:"victor",  name:"Victor",  color:"#22c55e" },
+  { id:"newanda", name:"Newanda", color:"#a78bfa" },
+];
+const TABS = [
+  { key:"all",        label:"All",            color:"#94a3b8" },
+  { key:"mine",       label:"My Queue",       color:"#22c55e" },
+  { key:"quote",      label:"Quote Requests", color:"#f59e0b" },
+  { key:"inquiry",    label:"Inquiries",      color:"#38bdf8" },
+  { key:"operations", label:"Operations",     color:"#a78bfa" },
+  { key:"priority",   label:"Priority",       color:"#f87171" },
+  { key:"closed",     label:"Closed",         color:"#64748b" },
+];
+const STATUS_CONFIG = {
+  new:         { label:"New",            color:"#a78bfa", bg:"rgba(167,139,250,0.1)" },
+  awaiting:    { label:"Awaiting Info",  color:"#f59e0b", bg:"rgba(245,158,11,0.1)"  },
+  replied:     { label:"Reply Sent",     color:"#38bdf8", bg:"rgba(56,189,248,0.1)"  },
+  ready:       { label:"Ready to Quote", color:"#22c55e", bg:"rgba(34,197,94,0.1)"   },
+  sent:        { label:"Quote Sent",     color:"#64748b", bg:"rgba(100,116,139,0.1)" },
+  unqualified: { label:"Not Qualified",  color:"#475569", bg:"rgba(71,85,105,0.1)"   },
+  spam:        { label:"Spam / Scam",    color:"#f87171", bg:"rgba(248,113,113,0.1)" },
+  forwarded:   { label:"Forwarded",      color:"#06b6d4", bg:"rgba(6,182,212,0.1)"   },
+};
+const CAT_ICON = { quote:"🚌", inquiry:"💬", operations:"🔧", priority:"🚨" };
+const CLOSED = ["sent","unqualified","spam","forwarded"];
+
+// ─── PIN Screen ───────────────────────────────────────────────────
+function PinScreen({ onUnlock }) {
+  const [pin, setPin] = React.useState("");
+  const [shake, setShake] = React.useState(false);
+  const [error, setError] = React.useState(false);
+
+  const tryPin = (value) => {
+    if (value === ACCESS_PIN) {
+      sessionStorage.setItem("ecl_auth", "1");
+      onUnlock();
+    } else if (value.length === ACCESS_PIN.length) {
+      setShake(true);
+      setError(true);
+      setTimeout(() => { setShake(false); setPin(""); setError(false); }, 700);
+    }
+  };
+
+  const handleKey = (k) => {
+    if (k === "DEL") { setPin(p => p.slice(0,-1)); return; }
+    const next = pin + k;
+    setPin(next);
+    tryPin(next);
+  };
+
+  return (
+    <div style={{ minHeight:"100vh", background:"#080f18", display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column" }}>
+      <div style={{ marginBottom:32, textAlign:"center" }}>
+        <div style={{ width:56, height:56, borderRadius:12, background:"#f59e0b", display:"flex", alignItems:"center", justifyContent:"center", fontSize:28, margin:"0 auto 16px" }}>🚌</div>
+        <div style={{ fontSize:20, fontWeight:700, color:"#f1f5f9" }}>Charter Inbox</div>
+        <div style={{ fontSize:13, color:"#475569", marginTop:4 }}>Empire Coach Line · Sales Dashboard</div>
+      </div>
+
+      <div style={{ background:"#0c1521", border:"1px solid #1a2535", borderRadius:16, padding:"32px 40px", width:300, textAlign:"center", boxShadow:"0 20px 60px rgba(0,0,0,0.5)" }}>
+        <div style={{ fontSize:13, color:"#475569", marginBottom:20 }}>Enter your access PIN</div>
+
+        {/* Dots */}
+        <div style={{ display:"flex", gap:12, justifyContent:"center", marginBottom:28,
+          animation: shake ? "shake 0.3s ease" : "none" }}>
+          {[0,1,2,3].map(i => (
+            <div key={i} style={{
+              width:14, height:14, borderRadius:"50%",
+              background: i < pin.length ? (error ? "#f87171" : "#f59e0b") : "#1a2535",
+              border: `2px solid ${i < pin.length ? (error ? "#f87171" : "#f59e0b") : "#2a3a4a"}`,
+              transition:"all 0.15s"
+            }} />
+          ))}
+        </div>
+
+        {/* Keypad */}
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:10 }}>
+          {["1","2","3","4","5","6","7","8","9","","0","DEL"].map((k,i) => (
+            <button key={i} onClick={() => k && handleKey(k)} disabled={!k}
+              style={{
+                background: k==="DEL" ? "#1a2535" : k ? "#0f1a27" : "transparent",
+                border: k==="DEL" ? "1px solid #2a3a4a" : k ? "1px solid #1a2535" : "none",
+                borderRadius:10, padding:"16px 0",
+                color: k==="DEL" ? "#64748b" : "#e2e8f0",
+                fontSize: k==="DEL" ? 18 : 20, fontWeight:600,
+                cursor: k ? "pointer" : "default",
+                transition:"background 0.1s"
+              }}>
+              {k}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <style>{`@keyframes shake { 0%,100%{transform:translateX(0)} 25%{transform:translateX(-8px)} 75%{transform:translateX(8px)} }`}</style>
+    </div>
+  );
+}
+
+// ─── Dashboard ────────────────────────────────────────────────────
+function Dashboard() {
+  const [data, setData]               = React.useState([]);
+  const [loading, setLoading]         = React.useState(true);
+  const [error, setError]             = React.useState(null);
+  const [lastFetched, setLastFetched] = React.useState(null);
+  const [activeTab, setActiveTab]     = React.useState("all");
+  const [selected, setSelected]       = React.useState(null);
+  const [approvedIds, setApprovedIds] = React.useState([]);
+  const [search, setSearch]           = React.useState("");
+  const [notifications, setNotifications] = React.useState([]);
+  const [soundEnabled, setSoundEnabled]   = React.useState(false);
+  const [currentUser, setCurrentUser]     = React.useState("victor");
+  const [reps, setReps]               = React.useState(REPS);
+  const [showAddRep, setShowAddRep]   = React.useState(false);
+  const [newRepName, setNewRepName]   = React.useState("");
+  const [copied, setCopied]           = React.useState(false);
+  const [showForward, setShowForward] = React.useState(false);
+  const [forwardTo, setForwardTo]     = React.useState("eddie@empirecoachline.com");
+  const [forwardNote, setForwardNote] = React.useState("");
+
+  const getRepFn = (id) => reps.find(r=>r.id===id) || { id, name:id, color:"#64748b" };
+  const selectedRecord = data.find(r=>r.id===selected);
+
+  const loadData = React.useCallback(async () => {
+    setLoading(true); setError(null);
+    try {
+      const records = await fetchAllRecords();
+      setData(records);
+      setLastFetched(new Date());
+    } catch(e) { setError(e.message); }
+    finally { setLoading(false); }
+  }, []);
+
+  React.useEffect(() => { loadData(); }, []);
+  React.useEffect(() => {
+    const interval = setInterval(loadData, 60000);
+    return () => clearInterval(interval);
+  }, [loadData]);
+
+  const filtered = data.filter(r => {
+    const isClosed = CLOSED.includes(r.status);
+    if (activeTab==="closed") return isClosed;
+    if (isClosed) return false;
+    if (activeTab==="all") return true;
+    if (activeTab==="mine") return currentUser!=="all" && r.assignee===currentUser;
+    return r.category===activeTab;
+  }).filter(r => {
+    if (!search) return true;
+    const q = search.toLowerCase();
+    return (r.customer||"").toLowerCase().includes(q)
+      || (r.school||"").toLowerCase().includes(q)
+      || (r.route||"").toLowerCase().includes(q);
+  });
+
+  const counts = TABS.reduce((acc,t) => {
+    if (t.key==="closed") { acc[t.key]=data.filter(r=>CLOSED.includes(r.status)).length; return acc; }
+    if (t.key==="all")    { acc[t.key]=data.filter(r=>!CLOSED.includes(r.status)).length; return acc; }
+    if (t.key==="mine")   { acc[t.key]=currentUser==="all"?0:data.filter(r=>r.assignee===currentUser&&!CLOSED.includes(r.status)).length; return acc; }
+    acc[t.key]=data.filter(r=>r.category===t.key&&!CLOSED.includes(r.status)).length;
+    return acc;
+  }, {});
+
+  const fireNotification = (type, message) => {
+    if (soundEnabled) playSound(type);
+    const id = Date.now();
+    setNotifications(n=>[...n,{id,type,message}]);
+    setTimeout(()=>setNotifications(n=>n.filter(x=>x.id!==id)),4000);
+  };
+
+  const handleStatusChange = (id, newStatus) => {
+    setData(prev=>prev.map(r=>r.id===id?{...r,status:newStatus}:r));
+    if (CLOSED.includes(newStatus)) setSelected(null);
+  };
+
+  return (
+    <div style={{ minHeight:"100vh", background:"#080f18", display:"flex", flexDirection:"column" }}>
+
+      {/* Toasts */}
+      <div style={{ position:"fixed", top:64, right:16, zIndex:100, display:"flex", flexDirection:"column", gap:8, pointerEvents:"none" }}>
+        {notifications.map(n=>(
+          <div key={n.id} style={{ background:n.type==="ready"?"#0a2a14":"#1a1500", border:`1px solid ${n.type==="ready"?"#22c55e":"#f59e0b"}`, borderRadius:8, padding:"10px 16px", display:"flex", alignItems:"center", gap:10, boxShadow:"0 4px 24px rgba(0,0,0,0.4)" }}>
+            <span style={{fontSize:18}}>{n.type==="ready"?"🟢":"🟡"}</span>
+            <div>
+              <div style={{fontSize:13,fontWeight:600,color:n.type==="ready"?"#22c55e":"#f59e0b"}}>{n.type==="ready"?"New Quote Ready":"Reply Needs Approval"}</div>
+              <div style={{fontSize:12,color:"#64748b"}}>{n.message}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Top bar */}
+      <div style={{ background:"#0c1521", borderBottom:"1px solid #1a2535", padding:"0 28px", display:"flex", alignItems:"center", justifyContent:"space-between", height:56, flexShrink:0 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+          <div style={{ width:28, height:28, borderRadius:6, background:"#f59e0b", display:"flex", alignItems:"center", justifyContent:"center", fontSize:14 }}>🚌</div>
+          <span style={{ fontSize:15, fontWeight:600, color:"#f1f5f9" }}>Charter Inbox</span>
+          <span style={{ fontSize:11, color:"#334155" }}>· Sales Dashboard</span>
+          {loading && <span style={{ fontSize:11, color:"#f59e0b" }}>↻ Syncing...</span>}
+          {!loading && lastFetched && <span style={{ fontSize:11, color:"#334155" }}>Updated {lastFetched.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",hour12:true}).toLowerCase()}</span>}
+        </div>
+        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+          {error && <span style={{ fontSize:11, color:"#f87171", background:"rgba(248,113,113,0.1)", padding:"3px 8px", borderRadius:6 }}>⚠ {error}</span>}
+          <button onClick={loadData} disabled={loading} style={{ background:"#1e2d3d", border:"1px solid #2a3a4a", borderRadius:6, padding:"4px 10px", color:loading?"#334155":"#94a3b8", fontSize:12, cursor:loading?"default":"pointer" }}>↻ Refresh</button>
+          <div style={{ width:8, height:8, borderRadius:"50%", background:error?"#f87171":"#22c55e" }} />
+          <span style={{ fontSize:12, color:"#475569" }}>{error?"Error":"Live"}</span>
+          <span style={{ fontSize:11, color:"#475569" }}>View:</span>
+          <select value={currentUser} onChange={e=>setCurrentUser(e.target.value)}
+            style={{ background:"#1e2d3d", border:"1px solid #2a3a4a", borderRadius:6, padding:"4px 8px", color:"#cbd5e1", fontSize:12, cursor:"pointer" }}>
+            <option value="all">All Reps</option>
+            {reps.map(rep=><option key={rep.id} value={rep.id}>{rep.name}</option>)}
+          </select>
+          <button onClick={()=>setShowAddRep(true)} style={{ background:"#1e2d3d", border:"1px solid #2a3a4a", borderRadius:6, padding:"4px 10px", color:"#94a3b8", fontSize:12, cursor:"pointer" }}>+ Add Rep</button>
+          <button onClick={()=>{sessionStorage.removeItem("ecl_auth");window.location.reload();}} style={{ background:"#1e2d3d", border:"1px solid #2a3a4a", borderRadius:6, padding:"4px 10px", color:"#475569", fontSize:11, cursor:"pointer" }}>Lock</button>
+        </div>
+      </div>
+
+      {/* Add Rep modal */}
+      {showAddRep && (
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.6)", zIndex:200, display:"flex", alignItems:"center", justifyContent:"center" }} onClick={()=>{setShowAddRep(false);setNewRepName("");}}>
+          <div style={{ background:"#0c1521", border:"1px solid #1a2535", borderRadius:12, padding:24, width:300, boxShadow:"0 20px 60px rgba(0,0,0,0.5)" }} onClick={e=>e.stopPropagation()}>
+            <div style={{ fontSize:15, fontWeight:600, color:"#f1f5f9", marginBottom:16 }}>Add Sales Rep</div>
+            <input autoFocus value={newRepName} onChange={e=>setNewRepName(e.target.value)}
+              onKeyDown={e=>{if(e.key==="Enter"&&newRepName.trim()){const id=newRepName.trim().toLowerCase().replace(/\s+/g,"_");const colors=["#f97316","#06b6d4","#ec4899","#84cc16","#f59e0b"];setReps(prev=>[...prev,{id,name:newRepName.trim(),color:colors[prev.length%colors.length]}]);setNewRepName("");setShowAddRep(false);}}}
+              placeholder="First name"
+              style={{ width:"100%", background:"#1a2535", border:"1px solid #2a3a4a", borderRadius:6, padding:"9px 12px", color:"#cbd5e1", fontSize:14, outline:"none", marginBottom:12 }} />
+            <div style={{ display:"flex", gap:8 }}>
+              <button onClick={()=>{if(!newRepName.trim())return;const id=newRepName.trim().toLowerCase().replace(/\s+/g,"_");const colors=["#f97316","#06b6d4","#ec4899","#84cc16","#f59e0b"];setReps(prev=>[...prev,{id,name:newRepName.trim(),color:colors[prev.length%colors.length]}]);setNewRepName("");setShowAddRep(false);}} style={{ flex:1, background:"#22c55e", border:"none", borderRadius:6, padding:9, color:"#000", fontSize:13, fontWeight:600, cursor:"pointer" }}>Add</button>
+              <button onClick={()=>{setShowAddRep(false);setNewRepName("");}} style={{ flex:1, background:"#1a2535", border:"none", borderRadius:6, padding:9, color:"#64748b", fontSize:13, cursor:"pointer" }}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {loading && data.length===0 ? (
+        <div style={{ flex:1, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", gap:16 }}>
+          <div style={{ fontSize:32 }}>🚌</div>
+          <div style={{ fontSize:14, color:"#475569" }}>Loading leads from Airtable...</div>
+        </div>
+      ) : (
+        <div style={{ display:"flex", flex:1, overflow:"hidden" }}>
+
+          {/* List panel */}
+          <div style={{ width:selected?380:"100%", flexShrink:0, display:"flex", flexDirection:"column", borderRight:selected?"1px solid #1a2535":"none", overflow:"hidden" }}>
+
+            <div style={{ padding:"12px 20px 0", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+              <button onClick={()=>setSoundEnabled(s=>!s)} style={{ background:soundEnabled?"rgba(34,197,94,0.1)":"#0c1521", border:soundEnabled?"1px solid #22c55e":"1px solid #1a2535", borderRadius:6, padding:"5px 12px", color:soundEnabled?"#22c55e":"#475569", fontSize:12, cursor:"pointer" }}>
+                {soundEnabled?"🔔 Sounds On":"🔕 Sounds Off"}
+              </button>
+              <div style={{ display:"flex", gap:6 }}>
+                <button onClick={()=>fireNotification("ready","Test lead")} style={{ background:"#0c1521", border:"1px solid #1a2535", borderRadius:6, padding:"5px 10px", color:"#475569", fontSize:11, cursor:"pointer" }}>Test: Ready</button>
+                <button onClick={()=>fireNotification("approval","Test lead")} style={{ background:"#0c1521", border:"1px solid #1a2535", borderRadius:6, padding:"5px 10px", color:"#475569", fontSize:11, cursor:"pointer" }}>Test: Approval</button>
+              </div>
+            </div>
+
+            {/* Stats */}
+            <div style={{ padding:"12px 20px 0", display:"flex", gap:10 }}>
+              {[{label:"Ready to Quote",value:data.filter(r=>r.status==="ready").length,color:"#22c55e"},{label:"Awaiting Info",value:data.filter(r=>r.status==="awaiting").length,color:"#f59e0b"},{label:"New",value:data.filter(r=>r.status==="new").length,color:"#38bdf8"}].map((s,i)=>(
+                <div key={i} style={{ flex:1, background:"#0c1521", border:"1px solid #1a2535", borderRadius:8, padding:"10px 14px" }}>
+                  <div style={{ fontSize:22, fontWeight:700, color:s.color }}>{s.value}</div>
+                  <div style={{ fontSize:11, color:"#475569", marginTop:2 }}>{s.label}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* Search + tabs */}
+            <div style={{ padding:"12px 20px 0" }}>
+              <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search customer, school, route..."
+                style={{ width:"100%", background:"#0c1521", border:"1px solid #1a2535", borderRadius:6, padding:"8px 12px", color:"#cbd5e1", fontSize:13, outline:"none", marginBottom:10 }} />
+              <div style={{ display:"flex", gap:4, overflowX:"auto", paddingBottom:4 }}>
+                {TABS.map(t=>(
+                  <button key={t.key} onClick={()=>setActiveTab(t.key)}
+                    style={{ background:activeTab===t.key?"#1a2535":"transparent", border:activeTab===t.key?`1px solid ${t.color}`:"1px solid transparent", borderRadius:20, padding:"4px 12px", color:activeTab===t.key?t.color:"#475569", fontSize:12, cursor:"pointer", whiteSpace:"nowrap", display:"flex", alignItems:"center", gap:5 }}>
+                    {t.label}
+                    <span style={{ background:activeTab===t.key?t.color:"#1a2535", color:activeTab===t.key?"#000":"#64748b", borderRadius:10, padding:"0 6px", fontSize:10, fontWeight:700 }}>{counts[t.key]||0}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* List */}
+            <div style={{ flex:1, overflowY:"auto", padding:"10px 20px 20px" }}>
+              {filtered.length===0 && <div style={{ textAlign:"center", color:"#334155", fontSize:13, marginTop:40 }}>No records in this view</div>}
+              {filtered.map(r=>{
+                const st=STATUS_CONFIG[r.status]||STATUS_CONFIG.new;
+                const isSelected=selected===r.id;
+                return (
+                  <div key={r.id} onClick={()=>setSelected(isSelected?null:r.id)}
+                    style={{ background:isSelected?"#0f1f30":"#0c1521", border:isSelected?"1px solid #2a4a6b":"1px solid #1a2535", borderRadius:10, padding:"14px 16px", marginBottom:8, cursor:"pointer" }}>
+                    <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", marginBottom:6 }}>
+                      <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                        <span style={{fontSize:16}}>{CAT_ICON[r.category]||"📋"}</span>
+                        <div>
+                          <div style={{ fontSize:14, fontWeight:600, color:"#f1f5f9" }}>{r.customer}</div>
+                          <div style={{ fontSize:11, color:"#475569" }}>{r.school}</div>
+                        </div>
+                      </div>
+                      <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:4 }}>
+                        <span style={{ fontSize:10, padding:"2px 8px", borderRadius:10, background:st.bg, color:st.color, fontWeight:600 }}>{st.label}</span>
+                        <span style={{ fontSize:10, color:"#334155" }}>{r.received}</span>
+                      </div>
+                    </div>
+                    {r.route&&r.route!=="—"&&<div style={{ fontSize:12, color:"#64748b", marginBottom:4 }}>📍 {r.route}</div>}
+                    {r.passengers&&r.passengers!=="—"&&<div style={{ fontSize:12, color:"#64748b" }}>👥 {r.passengers}{r.date&&r.date!=="—"?` · 📅 ${r.date}`:""}</div>}
+                    {r.note&&<div style={{ fontSize:12, color:"#475569", marginTop:6, fontStyle:"italic" }}>"{r.note}"</div>}
+                    <div style={{ display:"flex", alignItems:"center", gap:6, marginTop:8, flexWrap:"wrap" }}>
+                      {r.assignee&&(()=>{const rep=getRepFn(r.assignee);return <span style={{ fontSize:10, background:rep.color+"22", color:rep.color, padding:"2px 8px", borderRadius:10, fontWeight:700 }}>★ {rep.name}</span>;})()}
+                      {r.tripType==="complex"&&<span style={{ fontSize:10, background:"rgba(56,189,248,0.1)", color:"#38bdf8", padding:"2px 8px", borderRadius:10 }}>Multi-day</span>}
+                      {r.ada&&<span style={{ fontSize:10, background:"rgba(248,113,113,0.15)", color:"#f87171", padding:"2px 8px", borderRadius:10, fontWeight:700 }}>♿ ADA</span>}
+                      {isShortNotice(r.date)&&<span style={{ fontSize:10, background:"rgba(251,191,36,0.15)", color:"#fbbf24", padding:"2px 8px", borderRadius:10, fontWeight:700 }}>⚡ SHORT NOTICE</span>}
+                      {r.flags&&r.flags.length>0&&<span style={{ fontSize:10, color:"#f59e0b" }}>⚠ {r.flags.length} flag{r.flags.length>1?"s":""}</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Detail panel */}
+          {selected&&selectedRecord&&(
+            <div style={{ flex:1, overflowY:"auto", padding:"24px 28px", background:"#0a121d" }}>
+              <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", marginBottom:20 }}>
+                <div>
+                  <h2 style={{ fontSize:20, fontWeight:700, color:"#f1f5f9", margin:0 }}>{selectedRecord.customer}</h2>
+                  <div style={{ fontSize:13, color:"#475569", marginTop:2 }}>{selectedRecord.school} · {selectedRecord.contact}</div>
+                  <div style={{ display:"flex", gap:6, marginTop:6, flexWrap:"wrap" }}>
+                    {(()=>{const rep=getRepFn(selectedRecord.assignee);return <span style={{ fontSize:11, background:rep.color+"22", color:rep.color, padding:"2px 10px", borderRadius:10, fontWeight:700 }}>★ {rep.name}</span>;})()}
+                    {selectedRecord.tripType==="complex"&&<span style={{ fontSize:11, background:"rgba(56,189,248,0.1)", color:"#38bdf8", padding:"2px 10px", borderRadius:10 }}>Multi-day / Complex</span>}
+                  </div>
+                </div>
+                <button onClick={()=>setSelected(null)} style={{ background:"#1a2535", border:"none", borderRadius:6, padding:"6px 12px", color:"#64748b", fontSize:12, cursor:"pointer" }}>✕ Close</button>
+              </div>
+
+              {/* Status bar */}
+              <div style={{ background:"#0c1521", border:"1px solid #1a2535", borderRadius:10, padding:"14px 16px", marginBottom:16 }}>
+                <div style={{ display:"flex", alignItems:"center", gap:12, flexWrap:"wrap" }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:8, flex:1 }}>
+                    <span style={{ fontSize:12, color:"#475569", whiteSpace:"nowrap" }}>Status</span>
+                    <select value={selectedRecord.status} onChange={e=>handleStatusChange(selectedRecord.id,e.target.value)}
+                      style={{ background:"#1a2535", border:"1px solid #2a3a4a", borderRadius:6, padding:"7px 12px", color:"#cbd5e1", fontSize:13, cursor:"pointer", flex:1, maxWidth:220 }}>
+                      <option value="new">New</option>
+                      <option value="awaiting">Awaiting Info</option>
+                      <option value="replied">Reply Sent</option>
+                      <option value="ready">Ready to Quote</option>
+                      <option value="sent">Quote Sent</option>
+                      <option value="unqualified">Not Qualified</option>
+                      <option value="spam">Spam / Scam</option>
+                      <option value="forwarded">Forwarded</option>
+                    </select>
+                  </div>
+                  <div style={{ display:"flex", gap:8 }}>
+                    {!CLOSED.includes(selectedRecord.status)&&<button style={{ background:"#f59e0b", border:"none", borderRadius:6, padding:"7px 16px", color:"#000", fontSize:13, fontWeight:700, cursor:"pointer" }}>Open in TBN →</button>}
+                    {!CLOSED.includes(selectedRecord.status)&&<button onClick={()=>{setForwardNote("");setShowForward(true);}} style={{ background:"rgba(6,182,212,0.1)", border:"1px solid #06b6d4", borderRadius:6, padding:"7px 14px", color:"#06b6d4", fontSize:13, fontWeight:600, cursor:"pointer" }}>↪ Forward</button>}
+                  </div>
+                </div>
+              </div>
+
+              {isShortNotice(selectedRecord.date)&&(
+                <div style={{ background:"rgba(251,191,36,0.08)", border:"1px solid #fbbf24", borderRadius:10, padding:"12px 16px", marginBottom:16, display:"flex", alignItems:"center", gap:10 }}>
+                  <span style={{fontSize:20}}>⚡</span>
+                  <div><div style={{ fontSize:13, fontWeight:700, color:"#fbbf24" }}>Short Notice — This Week</div><div style={{ fontSize:12, color:"#fde68a", marginTop:2 }}>Prioritize quoting and follow-up immediately.</div></div>
+                </div>
+              )}
+
+              {selectedRecord.ada&&(
+                <div style={{ background:"rgba(248,113,113,0.1)", border:"1px solid #f87171", borderRadius:10, padding:"12px 16px", marginBottom:16, display:"flex", alignItems:"center", gap:10 }}>
+                  <span style={{fontSize:20}}>♿</span>
+                  <div><div style={{ fontSize:13, fontWeight:700, color:"#f87171" }}>ADA / Wheelchair Accessible Vehicle Required</div><div style={{ fontSize:12, color:"#fca5a5", marginTop:2 }}>Confirm ADA vehicle availability before quoting.</div></div>
+                </div>
+              )}
+
+              {selectedRecord.category==="quote"&&(
+                <div style={{ background:"#0c1521", border:"1px solid #1a2535", borderRadius:10, marginBottom:16, overflow:"hidden" }}>
+                  <div style={{ padding:"10px 16px", borderBottom:"1px solid #1a2535" }}><span style={{ fontSize:11, color:"#475569", letterSpacing:"0.1em", textTransform:"uppercase" }}>Quote Details</span></div>
+                  <div style={{ padding:"12px 16px", borderBottom:"1px solid #0f1724", background:"#0a1018" }}>
+                    <div style={{ fontSize:10, color:"#475569", textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:8 }}>Requestor</div>
+                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"4px 16px" }}>
+                      {[["Name",selectedRecord.customer],["School / Org",selectedRecord.school],["Email",selectedRecord.contact],["Phone",selectedRecord.phone||"—"],["Event Type",selectedRecord.eventType||"—"]].map(([label,value],i)=>(
+                        <div key={i} style={{padding:"4px 0"}}>
+                          <div style={{fontSize:10,color:"#475569"}}>{label}</div>
+                          <div style={{fontSize:13,color:value&&value!=="—"?"#e2d9c8":"#2d3f52",fontStyle:value&&value!=="—"?"normal":"italic"}}>{value||"—"}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div style={{ padding:"12px 16px", borderBottom:"1px solid #0f1724", background:"#0a1018" }}>
+                    <div style={{ fontSize:10, color:"#475569", textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:8 }}>Trip Details</div>
+                    {[["Travel Date",selectedRecord.date],["Pickup Location",selectedRecord.pickupLocation],["Pickup Time",selectedRecord.pickupTime],["Destination",selectedRecord.dropoffLocation],["Return Time",selectedRecord.returnTime]].map(([label,value],i)=>(
+                      <div key={i} style={{ display:"grid", gridTemplateColumns:"140px 1fr", marginBottom:6 }}>
+                        <span style={{fontSize:12,color:"#475569"}}>{label}</span>
+                        <span style={{fontSize:13,color:value&&value!=="—"?"#e2d9c8":"#2d3f52",fontStyle:!value||value==="—"?"italic":"normal"}}>{value||"—"}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ padding:"12px 16px", background:"#0a1018" }}>
+                    <div style={{ fontSize:10, color:"#475569", textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:8 }}>Vehicle & Passengers</div>
+                    {[["No. of Buses",selectedRecord.numBuses||"—"],["Passengers",selectedRecord.numPassengers||selectedRecord.passengers],["Vehicle Size",selectedRecord.vehicle],["Amenities",selectedRecord.amenities||"None specified"]].map(([label,value],i)=>(
+                      <div key={i} style={{ display:"grid", gridTemplateColumns:"140px 1fr", marginBottom:6 }}>
+                        <span style={{fontSize:12,color:"#475569"}}>{label}</span>
+                        <span style={{fontSize:13,color:value&&value!=="—"&&value!=="None specified"?"#e2d9c8":"#2d3f52"}}>{value||"—"}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {selectedRecord.flags&&selectedRecord.flags.length>0&&(
+                <div style={{ background:"#150f00", border:"1px solid #78350f", borderRadius:10, marginBottom:16, overflow:"hidden" }}>
+                  <div style={{ padding:"10px 16px", borderBottom:"1px solid #78350f", fontSize:11, color:"#92400e", letterSpacing:"0.1em", textTransform:"uppercase" }}>⚠ Flagged Issues</div>
+                  {selectedRecord.flags.map((f,i)=>(
+                    <div key={i} style={{ padding:"10px 16px", borderBottom:i<selectedRecord.flags.length-1?"1px solid #1a0f00":"none", fontSize:13, color:"#c8a86b" }}>· {f}</div>
+                  ))}
+                </div>
+              )}
+
+              {selectedRecord.note&&(
+                <div style={{ background:"#0c1521", border:"1px solid #1a2535", borderRadius:10, padding:"14px 16px", marginBottom:16 }}>
+                  <div style={{ fontSize:11, color:"#475569", letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:8 }}>Summary</div>
+                  <div style={{ fontSize:13, color:"#94a3b8", lineHeight:1.6 }}>{selectedRecord.note}</div>
+                </div>
+              )}
+
+              {selectedRecord.draftReply&&(
+                <div style={{ background:"#0c1521", border:"1px solid #1a2535", borderRadius:10, overflow:"hidden", marginBottom:16 }}>
+                  <div style={{ padding:"10px 16px", borderBottom:"1px solid #1a2535", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                    <span style={{ fontSize:11, color:"#475569", letterSpacing:"0.1em", textTransform:"uppercase" }}>AI Draft Reply</span>
+                    <button onClick={()=>{navigator.clipboard.writeText(selectedRecord.draftReply);setCopied(true);setTimeout(()=>setCopied(false),2000);}}
+                      style={{ background:copied?"#16a34a":"#1e2d3d", border:"none", borderRadius:4, padding:"5px 12px", color:copied?"#fff":"#94a3b8", fontSize:11, cursor:"pointer" }}>
+                      {copied?"✓ Copied":"Copy"}
+                    </button>
+                  </div>
+                  <div style={{ padding:"14px 16px", fontSize:13, color:"#94a3b8", lineHeight:1.8, whiteSpace:"pre-wrap" }}>{selectedRecord.draftReply}</div>
+                  {!approvedIds.includes(selectedRecord.id)?(
+                    <div style={{ padding:"12px 16px", borderTop:"1px solid #1a2535", display:"flex", gap:8 }}>
+                      <button onClick={()=>setApprovedIds(prev=>[...prev,selectedRecord.id])} style={{ background:"#16a34a", border:"none", borderRadius:6, padding:"9px 20px", color:"#fff", fontSize:13, fontWeight:600, cursor:"pointer", flex:1 }}>✓ Approve & Send</button>
+                      <button style={{ background:"#1a2535", border:"none", borderRadius:6, padding:"9px 20px", color:"#94a3b8", fontSize:13, cursor:"pointer", flex:1 }}>✎ Edit First</button>
+                    </div>
+                  ):(
+                    <div style={{ padding:"12px 16px", borderTop:"1px solid #1a2535", display:"flex", alignItems:"center", gap:8 }}>
+                      <span style={{color:"#22c55e"}}>✓</span>
+                      <span style={{ fontSize:13, color:"#22c55e" }}>Reply sent to {selectedRecord.contact}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div style={{ background:"#0c1521", border:"1px solid #1a2535", borderRadius:10, overflow:"hidden" }}>
+                <div style={{ padding:"10px 16px", borderBottom:"1px solid #1a2535", fontSize:11, color:"#475569", letterSpacing:"0.1em", textTransform:"uppercase" }}>Original Email</div>
+                <div style={{ padding:"14px 16px", fontSize:13, color:"#64748b", lineHeight:1.8, whiteSpace:"pre-wrap", fontFamily:"Georgia, serif" }}>{selectedRecord.fullEmail||"No email body recorded."}</div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Forward modal */}
+      {showForward&&selectedRecord&&(
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.7)", zIndex:200, display:"flex", alignItems:"center", justifyContent:"center" }} onClick={()=>setShowForward(false)}>
+          <div style={{ background:"#0c1521", border:"1px solid #1a2535", borderRadius:12, padding:24, width:520, maxHeight:"80vh", overflowY:"auto", boxShadow:"0 20px 60px rgba(0,0,0,0.6)" }} onClick={e=>e.stopPropagation()}>
+            <div style={{ fontSize:15, fontWeight:600, color:"#f1f5f9", marginBottom:4 }}>↪ Forward to Manager</div>
+            <div style={{ fontSize:12, color:"#475569", marginBottom:20 }}>Re: {selectedRecord.customer}</div>
+            <div style={{ marginBottom:12 }}>
+              <div style={{ fontSize:11, color:"#475569", marginBottom:4, textTransform:"uppercase" }}>To</div>
+              <input value={forwardTo} onChange={e=>setForwardTo(e.target.value)} style={{ width:"100%", background:"#1a2535", border:"1px solid #2a3a4a", borderRadius:6, padding:"8px 12px", color:"#cbd5e1", fontSize:13, outline:"none" }} />
+            </div>
+            <div style={{ marginBottom:12 }}>
+              <div style={{ fontSize:11, color:"#475569", marginBottom:4, textTransform:"uppercase" }}>Subject</div>
+              <div style={{ background:"#1a2535", border:"1px solid #2a3a4a", borderRadius:6, padding:"8px 12px", color:"#64748b", fontSize:13 }}>FWD: {selectedRecord.customer} — {selectedRecord.school} [{selectedRecord.date}]</div>
+            </div>
+            <div style={{ marginBottom:12 }}>
+              <div style={{ fontSize:11, color:"#475569", marginBottom:4, textTransform:"uppercase" }}>Note (optional)</div>
+              <textarea value={forwardNote} onChange={e=>setForwardNote(e.target.value)} rows={3} style={{ width:"100%", background:"#1a2535", border:"1px solid #2a3a4a", borderRadius:6, padding:"8px 12px", color:"#cbd5e1", fontSize:13, outline:"none", resize:"vertical", fontFamily:"inherit" }} />
+            </div>
+            <div style={{ background:"#080f18", border:"1px solid #1a2535", borderRadius:6, padding:"12px 14px", marginBottom:16, fontSize:12, color:"#64748b", lineHeight:1.7, whiteSpace:"pre-wrap" }}>{selectedRecord.fullEmail}</div>
+            <div style={{ display:"flex", gap:8 }}>
+              <button onClick={()=>{setData(prev=>prev.map(r=>r.id===selectedRecord.id?{...r,status:"forwarded"}:r));setShowForward(false);setSelected(null);}} style={{ flex:1, background:"#06b6d4", border:"none", borderRadius:6, padding:10, color:"#000", fontSize:13, fontWeight:700, cursor:"pointer" }}>↪ Send Forward</button>
+              <button onClick={()=>setShowForward(false)} style={{ flex:1, background:"#1a2535", border:"none", borderRadius:6, padding:10, color:"#64748b", fontSize:13, cursor:"pointer" }}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── App root ─────────────────────────────────────────────────────
+function App() {
+  const [unlocked, setUnlocked] = React.useState(() => sessionStorage.getItem("ecl_auth")==="1");
+  if (!unlocked) return <PinScreen onUnlock={()=>setUnlocked(true)} />;
+  return <Dashboard />;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
